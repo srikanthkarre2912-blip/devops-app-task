@@ -7,7 +7,7 @@ variable "cluster_name" {
 variable "aws_region" {
   description = "AWS region"
   type        = string
-  default     = "us-east-"  # Changed to match your main.tf
+  default     = "us-east-1"  # Changed to match your main.tf
 }
 
 variable "vpc_cidr" {
@@ -71,3 +71,4 @@ variable "node_instance_type" {
   type        = string
   default     = "t3.medium"
 }
+
