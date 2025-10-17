@@ -1,7 +1,7 @@
 variable "cluster_name" {
   description = "Name of the EKS cluster"
   type        = string
-  default     = "my-eks-cluster"
+  default     = "my-eks-cluster-1"
 }
 
 variable "aws_region" {
@@ -71,5 +71,6 @@ variable "node_instance_type" {
   type        = string
   default     = "t3.medium"
 }
+
 
 
