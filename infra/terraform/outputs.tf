@@ -29,15 +29,15 @@ output "cluster_status" {
   value       = aws_eks_cluster.eks_cluster.status
 }
 
-# VPC outputs
+# VPC outputs - using data sources for existing VPC
 output "vpc_id" {
   description = "VPC ID"
-  value       = aws_vpc.main.id
+  value       = data.aws_vpc.existing.id
 }
 
 output "subnet_ids" {
-  description = "List of subnet IDs"
-  value       = [aws_subnet.main_a.id, aws_subnet.main_b.id]
+  description = "List of subnet IDs used by EKS"
+  value       = [var.subnet_id_a, var.subnet_id_b]
 }
 
 # IAM Role outputs
@@ -60,4 +60,15 @@ output "node_group_arn" {
 output "node_group_status" {
   description = "EKS node group status"
   value       = aws_eks_node_group.node_group.status
+}
+
+# Additional useful outputs
+output "cluster_oidc_issuer_url" {
+  description = "EKS cluster OIDC issuer URL"
+  value       = aws_eks_cluster.eks_cluster.identity[0].oidc[0].issuer
+}
+
+output "kubeconfig_update_command" {
+  description = "Command to update kubeconfig"
+  value       = "aws eks update-kubeconfig --region ${var.aws_region} --name ${var.cluster_name}"
 }
