@@ -1,0 +1,115 @@
+name: CI/CD Pipeline
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+env:
+  AWS_REGION: us-east-1
+  CLUSTER_NAME: devops-task-cluster
+  DOCKER_IMAGE: devops-app  # Changed from your-docker-username/devops-app
+  NAMESPACE: devops-app
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.11'
+    
+    - name: Install dependencies
+      run: |
+        cd app
+        pip install -r requirements.txt
+    
+    - name: Test application
+      run: |
+        cd app
+        python -c "import app; print('App imports successfully')"
+
+  build-and-push:
+    needs: test
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/main'
+    
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Configure AWS credentials
+      uses: aws-actions/configure-aws-credentials@v4
+      with:
+        aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+        aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+        aws-region: ${{ env.AWS_REGION }}
+
+    - name: Login to Amazon ECR
+      id: login-ecr
+      uses: aws-actions/amazon-ecr-login@v2
+
+    - name: Build Docker image
+      run: |
+        cd app
+        docker build -t ${{ env.DOCKER_IMAGE }}:${{ github.sha }} .
+        docker tag ${{ env.DOCKER_IMAGE }}:${{ github.sha }} ${{ env.DOCKER_IMAGE }}:latest
+
+    - name: Push Docker image to ECR
+      run: |
+        # Get account ID and region
+        ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
+        ECR_REGISTRY=$ACCOUNT_ID.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com
+        
+        # Create ECR repository if it doesn't exist
+        aws ecr describe-repositories --repository-names devops-app || \
+        aws ecr create-repository --repository-name devops-app
+        
+        # Tag and push
+        docker tag ${{ env.DOCKER_IMAGE }}:${{ github.sha }} $ECR_REGISTRY/devops-app:${{ github.sha }}
+        docker tag ${{ env.DOCKER_IMAGE }}:latest $ECR_REGISTRY/devops-app:latest
+        
+        docker push $ECR_REGISTRY/devops-app:${{ github.sha }}
+        docker push $ECR_REGISTRY/devops-app:latest
+        
+        echo "IMAGE_TAG=$ECR_REGISTRY/devops-app:${{ github.sha }}" >> $GITHUB_ENV
+
+  deploy:
+    needs: build-and-push
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/main'
+    
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Configure AWS credentials
+      uses: aws-actions/configure-aws-credentials@v4
+      with:
+        aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+        aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+        aws-region: ${{ env.AWS_REGION }}
+
+    - name: Update kubeconfig
+      run: |
+        aws eks update-kubeconfig --region ${{ env.AWS_REGION }} --name ${{ env.CLUSTER_NAME }}
+
+    - name: Deploy to Kubernetes
+      run: |
+        # Update image in deployment
+        sed -i "s|IMAGE_PLACEHOLDER|${{ env.IMAGE_TAG }}|g" infra/k8s-manifests/base/deployment.yaml
+        
+        # Apply Kubernetes manifests
+        kubectl apply -f infra/k8s-manifests/base/ -n ${{ env.NAMESPACE }} --validate=false
+
+    - name: Verify deployment
+      run: |
+        kubectl rollout status deployment/devops-app -n ${{ env.NAMESPACE }} --timeout=300s
+        kubectl get pods -n ${{ env.NAMESPACE }}
+        
+    - name: Get Load Balancer URL
+      run: |
+        echo "Application URL:"
+        kubectl get ingress devops-app-ingress -n ${{ env.NAMESPACE }} -o jsonpath='{.status.loadBalancer.ingress[0].hostname}'
