@@ -87,36 +87,36 @@ jobs:
       run: |
         echo "Waiting for EKS cluster to become active..."
         # Wait for cluster to be created and active (timeout: 20 minutes)
-        for i in {1..40}; do
+        for i in {1..35}; do
           CLUSTER_STATUS=$(aws eks describe-cluster --name ${{ env.CLUSTER_NAME }} --region ${{ env.AWS_REGION }} --query "cluster.status" --output text 2>/dev/null || echo "CREATING")
           echo "Cluster status: $CLUSTER_STATUS"
           if [ "$CLUSTER_STATUS" = "ACTIVE" ]; then
             echo "✅ EKS cluster is now ACTIVE"
             break
           fi
-          if [ $i -eq 40 ]; then
+          if [ $i -eq 35 ]; then
             echo "❌ Timeout waiting for cluster to become active"
             exit 1
           fi
-          sleep 30
+          sleep 20
         done
 
     - name: Wait for node group to be ready
       run: |
         echo "Waiting for node group to become active..."
         # Wait for node group to be ready (timeout: 20 minutes)
-        for i in {1..40}; do
+        for i in {1..20}; do
           NODE_STATUS=$(aws eks describe-nodegroup --cluster-name ${{ env.CLUSTER_NAME }} --nodegroup-name my-node-group --region ${{ env.AWS_REGION }} --query "nodegroup.status" --output text 2>/dev/null || echo "CREATING")
           echo "Node group status: $NODE_STATUS"
           if [ "$NODE_STATUS" = "ACTIVE" ]; then
             echo "✅ Node group is now ACTIVE"
             break
           fi
-          if [ $i -eq 40 ]; then
+          if [ $i -eq 20 ]; then
             echo "❌ Timeout waiting for node group to become active"
             exit 1
           fi
-          sleep 30
+          sleep 15
         done
 
     - name: Update kubeconfig after cluster creation
