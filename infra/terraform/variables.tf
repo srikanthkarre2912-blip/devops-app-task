@@ -7,45 +7,27 @@ variable "cluster_name" {
 variable "aws_region" {
   description = "AWS region"
   type        = string
-  default     = "us-east-1"  # Changed to match your main.tf
+  default     = "us-east-1"
 }
 
-variable "vpc_cidr" {
-  description = "CIDR block for VPC"
+# Use existing VPC and subnets instead of creating new ones
+variable "existing_vpc_id" {
+  description = "Existing VPC ID"
   type        = string
-  default     = "172.31.0.0/20"
+  default     = "vpc-0ced9c4d6627b9a7f"
 }
 
-# Remove cluster_version since your main.tf doesn't use it
-# variable "cluster_version" {
-#   description = "Kubernetes version for EKS cluster"
-#   type        = string
-#   default     = "1.28"
-# }
-
-# Add these new variables that match your main.tf subnet configuration
-variable "subnet_cidr_a" {
-  description = "CIDR block for subnet A"
-  type        = string
-  default     = "172.31.21.0/24"
-}
-
-variable "subnet_cidr_b" {
-  description = "CIDR block for subnet B"
-  type        = string
-  default     = "172.31.21.0/24"
-}
-
-variable "availability_zone_a" {
-  description = "Availability zone for subnet A"
-  type        = string
-  default     = "us-east-1a"
-}
-
-variable "availability_zone_b" {
-  description = "Availability zone for subnet B"
-  type        = string
-  default     = "us-east-1b"
+variable "existing_subnet_ids" {
+  description = "Existing subnet IDs"
+  type        = list(string)
+  default     = [
+    "subnet-017629d73c324a704",  # us-east-1a
+    "subnet-0f22690460a8f9ab6",  # us-east-1b
+    "subnet-0d30f5fbc20b45907",  # us-east-1c
+    "subnet-0d102dd465929d6c9",  # us-east-1d
+    "subnet-03adeef6449a6a230",  # us-east-1e
+    "subnet-09c47b5b6ef1944bd"   # us-east-1f
+  ]
 }
 
 variable "node_group_desired_size" {
@@ -71,6 +53,3 @@ variable "node_instance_type" {
   type        = string
   default     = "t3.medium"
 }
-
-
-
