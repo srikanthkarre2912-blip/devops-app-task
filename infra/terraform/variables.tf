@@ -13,7 +13,7 @@ variable "aws_region" {
 variable "vpc_cidr" {
   description = "CIDR block for VPC"
   type        = string
-  default     = "10.0.0.0/16"
+  default     = "172.31.0.0/20"
 }
 
 # Remove cluster_version since your main.tf doesn't use it
@@ -27,13 +27,13 @@ variable "vpc_cidr" {
 variable "subnet_cidr_a" {
   description = "CIDR block for subnet A"
   type        = string
-  default     = "10.0.1.0/24"
+  default     = "172.31.21.0/24"
 }
 
 variable "subnet_cidr_b" {
   description = "CIDR block for subnet B"
   type        = string
-  default     = "10.0.2.0/24"
+  default     = "172.31.21.0/24"
 }
 
 variable "availability_zone_a" {
@@ -71,4 +71,5 @@ variable "node_instance_type" {
   type        = string
   default     = "t3.medium"
 }
+
 
