@@ -10,13 +10,7 @@ variable "aws_region" {
   default     = "us-east-1"
 }
 
-# Use existing VPC and subnets
-variable "existing_vpc_id" {
-  description = "Existing VPC ID"
-  type        = string
-  default     = "vpc-0ced9c4d6627b9a7f"
-}
-
+# Use existing subnets
 variable "subnet_id_a" {
   description = "Existing subnet ID for zone A"
   type        = string
