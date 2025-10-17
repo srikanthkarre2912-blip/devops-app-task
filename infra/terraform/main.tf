@@ -2,11 +2,7 @@ provider "aws" {
   region = var.aws_region
 }
 
-# Use data sources to reference existing VPC and subnets
-data "aws_vpc" "existing" {
-  id = var.existing_vpc_id
-}
-
+# Use data sources to reference existing subnets (remove VPC data source as it's not needed)
 data "aws_subnet" "subnet_a" {
   id = var.subnet_id_a
 }
@@ -15,7 +11,7 @@ data "aws_subnet" "subnet_b" {
   id = var.subnet_id_b
 }
 
-# IAM roles (with unique names to avoid conflicts)
+# IAM roles
 resource "aws_iam_role" "eks_service_role" {
   name = "eksServiceRole-${var.cluster_name}"
 
@@ -48,7 +44,7 @@ resource "aws_eks_cluster" "eks_cluster" {
   role_arn = aws_iam_role.eks_service_role.arn
 
   vpc_config {
-    subnet_ids              = [var.subnet_id_a, var.subnet_id_b]  # Use existing subnet IDs
+    subnet_ids              = [var.subnet_id_a, var.subnet_id_b]
     endpoint_private_access = true
     endpoint_public_access  = true
   }
@@ -96,7 +92,7 @@ resource "aws_eks_node_group" "node_group" {
   node_group_name = "my-node-group-${var.cluster_name}"
   node_role_arn   = aws_iam_role.eks_node_role.arn
 
-  subnet_ids = [var.subnet_id_a, var.subnet_id_b]  # Use existing subnet IDs
+  subnet_ids = [var.subnet_id_a, var.subnet_id_b]
 
   scaling_config {
     desired_size = var.node_group_desired_size
