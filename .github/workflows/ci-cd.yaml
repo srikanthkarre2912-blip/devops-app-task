@@ -7,8 +7,8 @@ on:
     branches: [ main ]
 
 env:
-  AWS_REGION: us-east-1  # Changed to match your main.tf
-  CLUSTER_NAME: my-eks-cluster  # Changed to match your main.tf
+  AWS_REGION: us-east-1
+  CLUSTER_NAME: my-eks-cluster
   DOCKER_IMAGE: devops-app
   NAMESPACE: devops-app
   TERRAFORM_VERSION: 1.5.0
@@ -34,36 +34,10 @@ jobs:
         cd app
         python -c "import app; print('App imports successfully')"
 
-  check-cluster:
+  terraform-apply:
     needs: test
     runs-on: ubuntu-latest
     if: github.ref == 'refs/heads/main'
-    outputs:
-      cluster-exists: ${{ steps.check-cluster.outputs.exists }}
-    
-    steps:
-    - name: Configure AWS credentials
-      uses: aws-actions/configure-aws-credentials@v4
-      with:
-        aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
-        aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-        aws-region: ${{ env.AWS_REGION }}
-
-    - name: Check if EKS cluster exists
-      id: check-cluster
-      run: |
-        if aws eks describe-cluster --name ${{ env.CLUSTER_NAME }} --region ${{ env.AWS_REGION }} > /dev/null 2>&1; then
-          echo "Cluster exists"
-          echo "exists=true" >> $GITHUB_OUTPUT
-        else
-          echo "Cluster does not exist"
-          echo "exists=false" >> $GITHUB_OUTPUT
-        fi
-
-  terraform-apply:
-    needs: check-cluster
-    runs-on: ubuntu-latest
-    if: github.ref == 'refs/heads/main' && needs.check-cluster.outputs.cluster-exists == 'false'
     
     steps:
     - uses: actions/checkout@v4
@@ -109,52 +83,62 @@ jobs:
         cd infra/terraform
         terraform apply -auto-approve tfplan
 
-    - name: Wait for cluster to be ready
+    - name: Wait for EKS cluster to be active
       run: |
-        echo "Waiting for EKS cluster to be active..."
-        aws eks wait cluster-active --name ${{ env.CLUSTER_NAME }} --region ${{ env.AWS_REGION }}
-        echo "Cluster is now active"
+        echo "Waiting for EKS cluster to become active..."
+        # Wait for cluster to be created and active (timeout: 20 minutes)
+        for i in {1..40}; do
+          CLUSTER_STATUS=$(aws eks describe-cluster --name ${{ env.CLUSTER_NAME }} --region ${{ env.AWS_REGION }} --query "cluster.status" --output text 2>/dev/null || echo "CREATING")
+          echo "Cluster status: $CLUSTER_STATUS"
+          if [ "$CLUSTER_STATUS" = "ACTIVE" ]; then
+            echo "✅ EKS cluster is now ACTIVE"
+            break
+          fi
+          if [ $i -eq 40 ]; then
+            echo "❌ Timeout waiting for cluster to become active"
+            exit 1
+          fi
+          sleep 30
+        done
+
+    - name: Wait for node group to be ready
+      run: |
+        echo "Waiting for node group to become active..."
+        # Wait for node group to be ready (timeout: 20 minutes)
+        for i in {1..40}; do
+          NODE_STATUS=$(aws eks describe-nodegroup --cluster-name ${{ env.CLUSTER_NAME }} --nodegroup-name my-node-group --region ${{ env.AWS_REGION }} --query "nodegroup.status" --output text 2>/dev/null || echo "CREATING")
+          echo "Node group status: $NODE_STATUS"
+          if [ "$NODE_STATUS" = "ACTIVE" ]; then
+            echo "✅ Node group is now ACTIVE"
+            break
+          fi
+          if [ $i -eq 40 ]; then
+            echo "❌ Timeout waiting for node group to become active"
+            exit 1
+          fi
+          sleep 30
+        done
 
     - name: Update kubeconfig after cluster creation
       run: |
+        echo "Updating kubeconfig for the newly created cluster..."
         aws eks update-kubeconfig --region ${{ env.AWS_REGION }} --name ${{ env.CLUSTER_NAME }}
-        
-    - name: Wait for node group to be ready
-      run: |
-        echo "Waiting for node group to be ready..."
-        aws eks wait nodegroup-active --cluster-name ${{ env.CLUSTER_NAME }} --nodegroup-name my-node-group --region ${{ env.AWS_REGION }}
-        echo "Node group is ready"
-
-    - name: Create namespace if not exists
-      run: |
-        kubectl create namespace ${{ env.NAMESPACE }} --dry-run=client -o yaml | kubectl apply -f -
-
-  setup-kubeconfig:
-    needs: check-cluster
-    runs-on: ubuntu-latest
-    if: github.ref == 'refs/heads/main' && needs.check-cluster.outputs.cluster-exists == 'true'
-    
-    steps:
-    - name: Configure AWS credentials
-      uses: aws-actions/configure-aws-credentials@v4
-      with:
-        aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
-        aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-        aws-region: ${{ env.AWS_REGION }}
-
-    - name: Update kubeconfig for existing cluster
-      run: |
-        aws eks update-kubeconfig --region ${{ env.AWS_REGION }} --name ${{ env.CLUSTER_NAME }}
+        echo "✅ Kubeconfig updated successfully"
         
     - name: Verify cluster access
       run: |
+        echo "Verifying cluster access..."
         kubectl cluster-info
         kubectl get nodes
+        echo "✅ Cluster access verified"
+
+    - name: Create namespace
+      run: |
+        kubectl create namespace ${{ env.NAMESPACE }} --dry-run=client -o yaml | kubectl apply -f -
+        echo "✅ Namespace created"
 
   build-and-push:
-    needs: 
-      - terraform-apply
-      - setup-kubeconfig
+    needs: terraform-apply
     runs-on: ubuntu-latest
     if: github.ref == 'refs/heads/main'
     
@@ -168,6 +152,10 @@ jobs:
         aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
         aws-region: ${{ env.AWS_REGION }}
 
+    - name: Update kubeconfig
+      run: |
+        aws eks update-kubeconfig --region ${{ env.AWS_REGION }} --name ${{ env.CLUSTER_NAME }}
+
     - name: Login to Amazon ECR
       id: login-ecr
       uses: aws-actions/amazon-ecr-login@v2
@@ -180,7 +168,6 @@ jobs:
 
     - name: Push Docker image to ECR
       run: |
-        # Get account ID and region
         ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
         ECR_REGISTRY=$ACCOUNT_ID.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com
         
@@ -196,6 +183,7 @@ jobs:
         docker push $ECR_REGISTRY/devops-app:latest
         
         echo "IMAGE_TAG=$ECR_REGISTRY/devops-app:${{ github.sha }}" >> $GITHUB_ENV
+        echo "✅ Docker image pushed to ECR"
 
   deploy:
     needs: build-and-push
@@ -222,30 +210,29 @@ jobs:
         kubectl create namespace ${{ env.NAMESPACE }} --dry-run=client -o yaml | kubectl apply -f -
         
         # Update image in deployment
-        if [ -f "infra/k8s-manifests/base/deployment.yaml" ]; then
-          sed -i "s|IMAGE_PLACEHOLDER|${{ env.IMAGE_TAG }}|g" infra/k8s-manifests/base/deployment.yaml
-        else
-          echo "Deployment file not found, checking for alternative locations..."
-          find . -name "*.yaml" -o -name "*.yml" | grep -E "(deployment|k8s|kubernetes)"
+        if [ -f "infra/k8s-manifests/deployment.yaml" ]; then
+          sed -i "s|IMAGE_PLACEHOLDER|${{ env.IMAGE_TAG }}|g" infra/k8s-manifests/deployment.yaml
         fi
         
         # Apply Kubernetes manifests
-        if [ -d "infra/k8s-manifests/base/" ]; then
-          kubectl apply -f infra/k8s-manifests/base/ -n ${{ env.NAMESPACE }} --validate=false
+        if [ -d "infra/k8s-manifests/" ]; then
+          kubectl apply -f infra/k8s-manifests/ -n ${{ env.NAMESPACE }} --validate=false
         else
           echo "Kubernetes manifests directory not found"
           # Try to find any k8s manifests
           find . -name "*.yaml" -o -name "*.yml" | grep -E "(deployment|service|ingress)" | xargs -I {} kubectl apply -f {} -n ${{ env.NAMESPACE }} --validate=false
         fi
+        echo "✅ Application deployed to Kubernetes"
 
     - name: Verify deployment
       run: |
         kubectl rollout status deployment/devops-app -n ${{ env.NAMESPACE }} --timeout=300s
-        kubectl get pods -n ${{ env.NAMESPACE }}
+        kubectl get pods,svc -n ${{ env.NAMESPACE }}
+        echo "✅ Deployment verified"
 
-    - name: Get Load Balancer URL
+    - name: Get application URL
       run: |
-        echo "Application URL:"
+        echo "🎯 Application Deployment Complete!"
+        echo "Application URL (LoadBalancer):"
         kubectl get service -n ${{ env.NAMESPACE }} -o wide
-        echo -e "\nTrying to get Ingress URL:"
-        kubectl get ingress -n ${{ env.NAMESPACE }} -o jsonpath='{.status.loadBalancer.ingress[0].hostname}' 2>/dev/null || echo "No ingress found"
+        echo -e "\nTo access your application, use the EXTERNAL-IP from the service above"
