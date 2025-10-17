@@ -2,24 +2,22 @@ provider "aws" {
   region = var.aws_region
 }
 
-resource "aws_vpc" "main" {
-  cidr_block = var.vpc_cidr
+# Use data sources to reference existing VPC and subnets
+data "aws_vpc" "existing" {
+  id = var.existing_vpc_id
 }
 
-resource "aws_subnet" "main_a" {
-  vpc_id            = aws_vpc.main.id
-  cidr_block        = var.subnet_cidr_a
-  availability_zone = var.availability_zone_a
+data "aws_subnet" "subnet_a" {
+  id = var.subnet_id_a
 }
 
-resource "aws_subnet" "main_b" {
-  vpc_id            = aws_vpc.main.id
-  cidr_block        = var.subnet_cidr_b
-  availability_zone = var.availability_zone_b
+data "aws_subnet" "subnet_b" {
+  id = var.subnet_id_b
 }
 
+# IAM roles (with unique names to avoid conflicts)
 resource "aws_iam_role" "eks_service_role" {
-  name = "eksServiceRole"
+  name = "eksServiceRole-${var.cluster_name}"
 
   assume_role_policy = jsonencode({
     Version = "2012-10-17",
@@ -50,7 +48,7 @@ resource "aws_eks_cluster" "eks_cluster" {
   role_arn = aws_iam_role.eks_service_role.arn
 
   vpc_config {
-    subnet_ids              = [aws_subnet.main_a.id, aws_subnet.main_b.id]
+    subnet_ids              = [var.subnet_id_a, var.subnet_id_b]  # Use existing subnet IDs
     endpoint_private_access = true
     endpoint_public_access  = true
   }
@@ -62,7 +60,7 @@ resource "aws_eks_cluster" "eks_cluster" {
 }
 
 resource "aws_iam_role" "eks_node_role" {
-  name = "eksNodeRole"
+  name = "eksNodeRole-${var.cluster_name}"
 
   assume_role_policy = jsonencode({
     Version = "2012-10-17",
@@ -95,10 +93,10 @@ resource "aws_iam_role_policy_attachment" "ec2_container_policy" {
 
 resource "aws_eks_node_group" "node_group" {
   cluster_name    = aws_eks_cluster.eks_cluster.name
-  node_group_name = "my-node-group"
+  node_group_name = "my-node-group-${var.cluster_name}"
   node_role_arn   = aws_iam_role.eks_node_role.arn
 
-  subnet_ids = [aws_subnet.main_a.id, aws_subnet.main_b.id]
+  subnet_ids = [var.subnet_id_a, var.subnet_id_b]  # Use existing subnet IDs
 
   scaling_config {
     desired_size = var.node_group_desired_size
