@@ -10,24 +10,23 @@ variable "aws_region" {
   default     = "us-east-1"
 }
 
-# Use existing VPC and subnets instead of creating new ones
+# Use existing VPC and subnets
 variable "existing_vpc_id" {
   description = "Existing VPC ID"
   type        = string
   default     = "vpc-0ced9c4d6627b9a7f"
 }
 
-variable "existing_subnet_ids" {
-  description = "Existing subnet IDs"
-  type        = list(string)
-  default     = [
-    "subnet-017629d73c324a704",  # us-east-1a
-    "subnet-0f22690460a8f9ab6",  # us-east-1b
-    "subnet-0d30f5fbc20b45907",  # us-east-1c
-    "subnet-0d102dd465929d6c9",  # us-east-1d
-    "subnet-03adeef6449a6a230",  # us-east-1e
-    "subnet-09c47b5b6ef1944bd"   # us-east-1f
-  ]
+variable "subnet_id_a" {
+  description = "Existing subnet ID for zone A"
+  type        = string
+  default     = "subnet-017629d73c324a704"  # us-east-1a
+}
+
+variable "subnet_id_b" {
+  description = "Existing subnet ID for zone B"
+  type        = string
+  default     = "subnet-0f22690460a8f9ab6"  # us-east-1b
 }
 
 variable "node_group_desired_size" {
