@@ -9,8 +9,9 @@ on:
 env:
   AWS_REGION: us-east-1
   CLUSTER_NAME: devops-task-cluster
-  DOCKER_IMAGE: devops-app  # Changed from your-docker-username/devops-app
+  DOCKER_IMAGE: devops-app
   NAMESPACE: devops-app
+  TERRAFORM_VERSION: 1.5.0
 
 jobs:
   test:
@@ -33,8 +34,115 @@ jobs:
         cd app
         python -c "import app; print('App imports successfully')"
 
-  build-and-push:
+  check-cluster:
     needs: test
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/main'
+    outputs:
+      cluster-exists: ${{ steps.check-cluster.outputs.exists }}
+    
+    steps:
+    - name: Configure AWS credentials
+      uses: aws-actions/configure-aws-credentials@v4
+      with:
+        aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+        aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+        aws-region: ${{ env.AWS_REGION }}
+
+    - name: Check if EKS cluster exists
+      id: check-cluster
+      run: |
+        if aws eks describe-cluster --name ${{ env.CLUSTER_NAME }} --region ${{ env.AWS_REGION }} > /dev/null 2>&1; then
+          echo "Cluster exists"
+          echo "exists=true" >> $GITHUB_OUTPUT
+        else
+          echo "Cluster does not exist"
+          echo "exists=false" >> $GITHUB_OUTPUT
+        fi
+
+  terraform-apply:
+    needs: check-cluster
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/main' && needs.check-cluster.outputs.cluster-exists == 'false'
+    
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Configure AWS credentials
+      uses: aws-actions/configure-aws-credentials@v4
+      with:
+        aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+        aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+        aws-region: ${{ env.AWS_REGION }}
+
+    - name: Setup Terraform
+      uses: hashicorp/setup-terraform@v3
+      with:
+        terraform_version: ${{ env.TERRAFORM_VERSION }}
+
+    - name: Terraform Format
+      id: fmt
+      run: |
+        cd infra/terraform
+        terraform fmt -check
+
+    - name: Terraform Init
+      id: init
+      run: |
+        cd infra/terraform
+        terraform init
+
+    - name: Terraform Validate
+      id: validate
+      run: |
+        cd infra/terraform
+        terraform validate -no-color
+
+    - name: Terraform Plan
+      id: plan
+      run: |
+        cd infra/terraform
+        terraform plan -no-color -out=tfplan
+
+    - name: Terraform Apply
+      run: |
+        cd infra/terraform
+        terraform apply -auto-approve tfplan
+
+    - name: Update kubeconfig after cluster creation
+      run: |
+        aws eks update-kubeconfig --region ${{ env.AWS_REGION }} --name ${{ env.CLUSTER_NAME }}
+        
+    - name: Create namespace if not exists
+      run: |
+        kubectl create namespace ${{ env.NAMESPACE }} --dry-run=client -o yaml | kubectl apply -f -
+
+  setup-kubeconfig:
+    needs: check-cluster
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/main' && needs.check-cluster.outputs.cluster-exists == 'true'
+    
+    steps:
+    - name: Configure AWS credentials
+      uses: aws-actions/configure-aws-credentials@v4
+      with:
+        aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+        aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+        aws-region: ${{ env.AWS_REGION }}
+
+    - name: Update kubeconfig for existing cluster
+      run: |
+        aws eks update-kubeconfig --region ${{ env.AWS_REGION }} --name ${{ env.CLUSTER_NAME }}
+        
+    - name: Verify cluster access
+      run: |
+        kubectl cluster-info
+        kubectl get nodes
+
+  build-and-push:
+    needs: 
+      - terraform-apply
+      - setup-kubeconfig
     runs-on: ubuntu-latest
     if: github.ref == 'refs/heads/main'
     
@@ -98,18 +206,34 @@ jobs:
 
     - name: Deploy to Kubernetes
       run: |
+        # Create namespace if not exists
+        kubectl create namespace ${{ env.NAMESPACE }} --dry-run=client -o yaml | kubectl apply -f -
+        
         # Update image in deployment
-        sed -i "s|IMAGE_PLACEHOLDER|${{ env.IMAGE_TAG }}|g" infra/k8s-manifests/base/deployment.yaml
+        if [ -f "infra/k8s-manifests/base/deployment.yaml" ]; then
+          sed -i "s|IMAGE_PLACEHOLDER|${{ env.IMAGE_TAG }}|g" infra/k8s-manifests/base/deployment.yaml
+        else
+          echo "Deployment file not found, checking for alternative locations..."
+          find . -name "*.yaml" -o -name "*.yml" | grep -E "(deployment|k8s|kubernetes)"
+        fi
         
         # Apply Kubernetes manifests
-        kubectl apply -f infra/k8s-manifests/base/ -n ${{ env.NAMESPACE }} --validate=false
+        if [ -d "infra/k8s-manifests/base/" ]; then
+          kubectl apply -f infra/k8s-manifests/base/ -n ${{ env.NAMESPACE }} --validate=false
+        else
+          echo "Kubernetes manifests directory not found"
+          # Try to find any k8s manifests
+          find . -name "*.yaml" -o -name "*.yml" | grep -E "(deployment|service|ingress)" | xargs -I {} kubectl apply -f {} -n ${{ env.NAMESPACE }} --validate=false
+        fi
 
     - name: Verify deployment
       run: |
         kubectl rollout status deployment/devops-app -n ${{ env.NAMESPACE }} --timeout=300s
         kubectl get pods -n ${{ env.NAMESPACE }}
-        
+
     - name: Get Load Balancer URL
       run: |
         echo "Application URL:"
-        kubectl get ingress devops-app-ingress -n ${{ env.NAMESPACE }} -o jsonpath='{.status.loadBalancer.ingress[0].hostname}'
+        kubectl get service -n ${{ env.NAMESPACE }} -o wide
+        echo -e "\nTrying to get Ingress URL:"
+        kubectl get ingress -n ${{ env.NAMESPACE }} -o jsonpath='{.status.loadBalancer.ingress[0].hostname}' 2>/dev/null || echo "No ingress found"
