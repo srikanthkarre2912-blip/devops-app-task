@@ -15,11 +15,4 @@ terraform {
       version = "~> 2.11"
     }
   }
-
-  backend "s3" {
-    # Configure backend in production
-     bucket = "task-devops0370"
-     key    = "devopstask/terraform.tfstate"
-     region = "us-east-1"
-  }
 }
