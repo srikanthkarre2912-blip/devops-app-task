@@ -7,7 +7,7 @@ on:
     branches: [ main ]
 
 env:
-  AWS_REGION: ap-south-1  # Changed to match your main.tf
+  AWS_REGION: us-east-1  # Changed to match your main.tf
   CLUSTER_NAME: my-eks-cluster  # Changed to match your main.tf
   DOCKER_IMAGE: devops-app
   NAMESPACE: devops-app
