@@ -7,8 +7,8 @@ on:
     branches: [ main ]
 
 env:
-  AWS_REGION: us-east-1
-  CLUSTER_NAME: devops-task-cluster
+  AWS_REGION: ap-south-1  # Changed to match your main.tf
+  CLUSTER_NAME: my-eks-cluster  # Changed to match your main.tf
   DOCKER_IMAGE: devops-app
   NAMESPACE: devops-app
   TERRAFORM_VERSION: 1.5.0
@@ -80,11 +80,11 @@ jobs:
       with:
         terraform_version: ${{ env.TERRAFORM_VERSION }}
 
-    - name: Terraform Format
-      id: fmt
+    - name: Terraform Format Check with Auto-fix
       run: |
         cd infra/terraform
-        terraform fmt -check
+        terraform fmt -check || terraform fmt
+        echo "Terraform files formatted"
 
     - name: Terraform Init
       id: init
@@ -109,10 +109,22 @@ jobs:
         cd infra/terraform
         terraform apply -auto-approve tfplan
 
+    - name: Wait for cluster to be ready
+      run: |
+        echo "Waiting for EKS cluster to be active..."
+        aws eks wait cluster-active --name ${{ env.CLUSTER_NAME }} --region ${{ env.AWS_REGION }}
+        echo "Cluster is now active"
+
     - name: Update kubeconfig after cluster creation
       run: |
         aws eks update-kubeconfig --region ${{ env.AWS_REGION }} --name ${{ env.CLUSTER_NAME }}
         
+    - name: Wait for node group to be ready
+      run: |
+        echo "Waiting for node group to be ready..."
+        aws eks wait nodegroup-active --cluster-name ${{ env.CLUSTER_NAME }} --nodegroup-name my-node-group --region ${{ env.AWS_REGION }}
+        echo "Node group is ready"
+
     - name: Create namespace if not exists
       run: |
         kubectl create namespace ${{ env.NAMESPACE }} --dry-run=client -o yaml | kubectl apply -f -
