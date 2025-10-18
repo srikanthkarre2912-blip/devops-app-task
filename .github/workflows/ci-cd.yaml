@@ -12,6 +12,7 @@ env:
   DOCKER_IMAGE: devops-app
   NAMESPACE: devops-app
   TERRAFORM_VERSION: 1.5.0
+  ECR_REPOSITORY: devops-app
 
 jobs:
   test:
@@ -33,6 +34,8 @@ jobs:
       run: |
         cd app
         python -c "import app; print('App imports successfully')"
+        # Add your actual tests here
+        python -m pytest tests/ -v
 
   terraform-apply:
     needs: test
@@ -86,7 +89,6 @@ jobs:
     - name: Wait for EKS cluster to be active
       run: |
         echo "Waiting for EKS cluster to become active..."
-        # Wait for cluster to be created and active (timeout: 20 minutes)
         for i in {1..35}; do
           CLUSTER_STATUS=$(aws eks describe-cluster --name ${{ env.CLUSTER_NAME }} --region ${{ env.AWS_REGION }} --query "cluster.status" --output text 2>/dev/null || echo "CREATING")
           echo "Cluster status: $CLUSTER_STATUS"
@@ -104,7 +106,6 @@ jobs:
     - name: Wait for node group to be ready
       run: |
         echo "Waiting for node group to become active..."
-        # Wait for node group to be ready (timeout: 20 minutes)
         for i in {1..20}; do
           NODE_STATUS=$(aws eks describe-nodegroup --cluster-name ${{ env.CLUSTER_NAME }} --nodegroup-name my-node-group-my-eks-cluster-1 --region ${{ env.AWS_REGION }} --query "nodegroup.status" --output text 2>/dev/null || echo "CREATING")
           echo "Node group status: $NODE_STATUS"
@@ -141,6 +142,9 @@ jobs:
     needs: terraform-apply
     runs-on: ubuntu-latest
     if: github.ref == 'refs/heads/main'
+    outputs:
+      image-uri: ${{ steps.set-ecr-output.outputs.image-uri }}
+      image-uri-latest: ${{ steps.set-ecr-output.outputs.image-uri-latest }}
     
     steps:
     - uses: actions/checkout@v4
@@ -165,25 +169,48 @@ jobs:
         cd app
         docker build -t ${{ env.DOCKER_IMAGE }}:${{ github.sha }} .
         docker tag ${{ env.DOCKER_IMAGE }}:${{ github.sha }} ${{ env.DOCKER_IMAGE }}:latest
+        echo "✅ Docker image built and tagged"
 
-    - name: Push Docker image to ECR
+    - name: Get ECR registry info
+      id: ecr-info
       run: |
         ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
         ECR_REGISTRY=$ACCOUNT_ID.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com
+        echo "ECR_REGISTRY=$ECR_REGISTRY" >> $GITHUB_ENV
+        echo "ACCOUNT_ID=$ACCOUNT_ID" >> $GITHUB_ENV
+
+    - name: Create ECR repository if not exists
+      run: |
+        aws ecr describe-repositories --repository-names ${{ env.ECR_REPOSITORY }} || \
+        aws ecr create-repository --repository-name ${{ env.ECR_REPOSITORY }}
+        echo "✅ ECR repository ensured"
+
+    - name: Tag and Push Docker images to ECR
+      run: |
+        # Tag images with ECR registry
+        docker tag ${{ env.DOCKER_IMAGE }}:${{ github.sha }} $ECR_REGISTRY/${{ env.ECR_REPOSITORY }}:${{ github.sha }}
+        docker tag ${{ env.DOCKER_IMAGE }}:latest $ECR_REGISTRY/${{ env.ECR_REPOSITORY }}:latest
         
-        # Create ECR repository if it doesn't exist
-        aws ecr describe-repositories --repository-names devops-app || \
-        aws ecr create-repository --repository-name devops-app
+        # Push both tags
+        docker push $ECR_REGISTRY/${{ env.ECR_REPOSITORY }}:${{ github.sha }}
+        docker push $ECR_REGISTRY/${{ env.ECR_REPOSITORY }}:latest
         
-        # Tag and push
-        docker tag ${{ env.DOCKER_IMAGE }}:${{ github.sha }} $ECR_REGISTRY/devops-app:${{ github.sha }}
-        docker tag ${{ env.DOCKER_IMAGE }}:latest $ECR_REGISTRY/devops-app:latest
-        
-        docker push $ECR_REGISTRY/devops-app:${{ github.sha }}
-        docker push $ECR_REGISTRY/devops-app:latest
-        
-        echo "IMAGE_TAG=$ECR_REGISTRY/devops-app:${{ github.sha }}" >> $GITHUB_ENV
-        echo "✅ Docker image pushed to ECR"
+        echo "✅ Docker images pushed to ECR"
+
+    - name: Set ECR image output
+      id: set-ecr-output
+      run: |
+        ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
+        ECR_REGISTRY=$ACCOUNT_ID.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com
+        echo "image-uri=$ECR_REGISTRY/${{ env.ECR_REPOSITORY }}:${{ github.sha }}" >> $GITHUB_OUTPUT
+        echo "image-uri-latest=$ECR_REGISTRY/${{ env.ECR_REPOSITORY }}:latest" >> $GITHUB_OUTPUT
+        echo "✅ ECR image outputs set"
+
+    - name: Display pushed images
+      run: |
+        echo "📦 Pushed Images:"
+        echo "Specific version: ${{ steps.set-ecr-output.outputs.image-uri }}"
+        echo "Latest version: ${{ steps.set-ecr-output.outputs.image-uri-latest }}"
 
   deploy:
     needs: build-and-push
@@ -203,19 +230,48 @@ jobs:
     - name: Update kubeconfig
       run: |
         aws eks update-kubeconfig --region ${{ env.AWS_REGION }} --name ${{ env.CLUSTER_NAME }}
+        echo "✅ Kubeconfig updated"
+
+    - name: Display deployment info
+      run: |
+        echo "🚀 Deployment Information:"
+        echo "Cluster: ${{ env.CLUSTER_NAME }}"
+        echo "Namespace: ${{ env.NAMESPACE }}"
+        echo "Image URI: ${{ needs.build-and-push.outputs.image-uri }}"
+        echo "Image URI Latest: ${{ needs.build-and-push.outputs.image-uri-latest }}"
+
+    - name: Create namespace if not exists
+      run: |
+        kubectl create namespace ${{ env.NAMESPACE }} --dry-run=client -o yaml | kubectl apply -f -
+        echo "✅ Namespace ensured"
+
+    - name: Prepare Kubernetes manifests
+      run: |
+        echo "Preparing Kubernetes manifests..."
+        
+        # Check if deployment.yaml exists
+        if [ -f "infra/kubernetes/deployment.yaml" ]; then
+          # Create a backup
+          cp infra/kubernetes/deployment.yaml infra/kubernetes/deployment.yaml.backup
+          
+          # Replace IMAGE_PLACEHOLDER with actual ECR image URI
+          sed -i "s|IMAGE_PLACEHOLDER|${{ needs.build-and-push.outputs.image-uri }}|g" infra/kubernetes/deployment.yaml
+          
+          echo "✅ Updated deployment.yaml with image: ${{ needs.build-and-push.outputs.image-uri }}"
+          echo "Updated deployment image section:"
+          grep -A 5 -B 5 "image:" infra/kubernetes/deployment.yaml || true
+        else
+          echo "❌ deployment.yaml not found at infra/kubernetes/deployment.yaml"
+          ls -la infra/kubernetes/ || echo "Kubernetes directory not found"
+          exit 1
+        fi
 
     - name: Deploy to Kubernetes
       run: |
-        # Create namespace if not exists
-        kubectl create namespace ${{ env.NAMESPACE }} --dry-run=client -o yaml | kubectl apply -f -
+        echo "Applying Kubernetes manifests..."
         
-        # Update image in deployment - FIX THIS LINE
-        if [ -f "infra/kubernetes/deployment.yaml" ]; then
-          sed -i "s|IMAGE_PLACEHOLDER|${DOCKER_IMAGE}:latest|g" infra/kubernetes/deployment.yaml
-        fi
-        
-        # Apply Kubernetes manifests
         if [ -d "infra/kubernetes/" ]; then
+          # Apply all Kubernetes manifests
           kubectl apply -f infra/kubernetes/ -n ${{ env.NAMESPACE }} --validate=false
           echo "✅ Kubernetes manifests applied from infra/kubernetes/"
         else
@@ -225,13 +281,52 @@ jobs:
 
     - name: Verify deployment
       run: |
-        kubectl rollout status deployment/devops-app -n ${{ env.NAMESPACE }} --timeout=300s
-        kubectl get pods,svc -n ${{ env.NAMESPACE }}
-        echo "✅ Deployment verified"
+        echo "Verifying deployment..."
+        
+        # Wait for deployment to complete
+        kubectl rollout status deployment/${{ env.DOCKER_IMAGE }} -n ${{ env.NAMESPACE }} --timeout=300s
+        
+        # Display deployment status
+        echo "📊 Deployment Status:"
+        kubectl get deployments,replicasets,pods -n ${{ env.NAMESPACE }}
+        
+        # Display service information
+        echo "🌐 Service Information:"
+        kubectl get services -n ${{ env.NAMESPACE }} -o wide
+        
+        echo "✅ Deployment verified successfully"
 
-    - name: Get application URL
+    - name: Run smoke test
       run: |
-        echo "🎯 Application Deployment Complete!"
-        echo "Application URL (LoadBalancer):"
-        kubectl get service -n ${{ env.NAMESPACE }} -o wide
-        echo -e "\nTo access your application, use the EXTERNAL-IP from the service above"
+        echo "Running smoke tests..."
+        
+        # Get the application URL (if using LoadBalancer)
+        SERVICE_URL=$(kubectl get service ${{ env.DOCKER_IMAGE }} -n ${{ env.NAMESPACE }} -o jsonpath='{.status.loadBalancer.ingress[0].hostname}' 2>/dev/null || echo "")
+        
+        if [ -n "$SERVICE_URL" ]; then
+          echo "Application URL: http://$SERVICE_URL"
+          # Add actual smoke test commands here
+          # Example: curl -f http://$SERVICE_URL/health || exit 1
+        else
+          echo "Service URL not available (might be ClusterIP type)"
+        fi
+        
+        # Check pod logs for errors
+        echo "📋 Pod Logs (last 10 lines):"
+        kubectl logs -n ${{ env.NAMESPACE }} -l app=${{ env.DOCKER_IMAGE }} --tail=10 || true
+
+    - name: Display completion message
+      run: |
+        echo "🎉 CI/CD Pipeline Completed Successfully!"
+        echo ""
+        echo "📋 Summary:"
+        echo "  ✅ Tests passed"
+        echo "  ✅ Infrastructure provisioned"
+        echo "  ✅ Docker image built and pushed to ECR"
+        echo "  ✅ Application deployed to EKS"
+        echo ""
+        echo "🔗 ECR Image: ${{ needs.build-and-push.outputs.image-uri }}"
+        echo "🏷️  Image Tags: ${{ github.sha }}, latest"
+        echo "📊 To check your application:"
+        echo "   kubectl get pods,svc -n ${{ env.NAMESPACE }}"
+        echo "   kubectl logs -n ${{ env.NAMESPACE }} -l app=${{ env.DOCKER_IMAGE }}"
