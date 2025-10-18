@@ -106,7 +106,7 @@ jobs:
         echo "Waiting for node group to become active..."
         # Wait for node group to be ready (timeout: 20 minutes)
         for i in {1..20}; do
-          NODE_STATUS=$(aws eks describe-nodegroup --cluster-name ${{ env.CLUSTER_NAME }} --nodegroup-name my-node-group --region ${{ env.AWS_REGION }} --query "nodegroup.status" --output text 2>/dev/null || echo "CREATING")
+          NODE_STATUS=$(aws eks describe-nodegroup --cluster-name ${{ env.CLUSTER_NAME }} --nodegroup-name my-node-group-my-eks-cluster-1 --region ${{ env.AWS_REGION }} --query "nodegroup.status" --output text 2>/dev/null || echo "CREATING")
           echo "Node group status: $NODE_STATUS"
           if [ "$NODE_STATUS" = "ACTIVE" ]; then
             echo "✅ Node group is now ACTIVE"
