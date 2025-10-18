@@ -1,84 +1,72 @@
 # 🚀 DevOps Engineer Take-Home Task: Automated Kubernetes Deployment
 
 ## 🧭 Overview
-
-This project demonstrates a **fully automated CI/CD pipeline** that deploys a **Python Flask web application** to an **Amazon EKS (Elastic Kubernetes Service)** cluster.  
-It integrates **Terraform** for Infrastructure as Code (IaC), **Docker** for containerization, and **GitHub Actions** for automation.
+This project automates the deployment of a **Python Flask web app** to **Amazon EKS** using:
+- **Terraform** (Infrastructure as Code)
+- **Docker** (containerization)
+- **GitHub Actions** (CI/CD automation)
 
 ---
 
-## 🧱 Solution Architecture
+## 🧱 Architecture
 
 ```mermaid
 graph TD
-    A[GitHub Repository] --> B[(Push to main branch)]
-    B --> C[GitHub Actions CI/CD Pipeline]
-    C --> D[Run Application Tests]
-    D --> E[Terraform - Provision EKS Cluster]
-    E --> F[Build & Push Docker Image to ECR]
-    F --> G[Deploy to Kubernetes]
-    G --> H[Live Application (LoadBalancer Service)]
-⚙️ Core Requirements Implementation
-✅ 1. Infrastructure as Code (IaC)
-Tool: Terraform
+    A[GitHub Repository] --> B[GitHub Actions Pipeline]
+    B --> C[Terraform - Create EKS Cluster]
+    C --> D[Build & Push Docker Image to ECR]
+    D --> E[Deploy to EKS using kubectl]
+    E --> F[Access App via LoadBalancer URL]
 
-Cloud Provider: AWS
+## ⚙️ Core Requirements Implementation
 
-Resources Provisioned:
+### ✅ 1. Infrastructure as Code (IaC)
+**Tool:** Terraform  
+**Cloud Provider:** AWS  
 
-EKS cluster with managed node group
+**Resources Provisioned:**
+- Amazon EKS cluster with managed node group  
+- IAM roles for EKS service and worker nodes  
+- VPC and subnets for networking  
+- Remote S3 backend for Terraform state management  
 
-IAM roles for EKS service and worker nodes
+---
 
-VPC and subnets for networking
+### ✅ 2. Containerization
+**Application:** Python Flask web application  
+**Dockerfile:** Multi-stage build for optimized image size  
+**Registry:** AWS ECR (Elastic Container Registry)  
+**Optimization:** Uses a lightweight Python slim base image for efficiency  
 
-Remote S3 backend for Terraform state management
+---
 
-✅ 2. Containerization
-App: Python Flask web application
+### ✅ 3. Kubernetes Manifests
+**Deployment:** 2 replicas with readiness and liveness probes  
+**Service Type:** LoadBalancer for public access  
+**Namespace:** `devops-app`  
+**Configuration:** Resource limits, environment variables, and labels  
+**Location:** `infra/kubernetes/` directory  
 
-Dockerfile: Multi-stage build for optimized image size
+---
 
-Registry: AWS ECR (Elastic Container Registry)
+### ✅ 4. CI/CD Pipeline
+**Tool:** GitHub Actions  
+**Trigger:** On push or pull request to the `main` branch  
 
-Optimization: Based on Python slim image for efficiency
+**Pipeline Stages:**
+1. Run unit tests  
+2. Terraform plan & apply  
+3. Build Docker image  
+4. Push image to ECR  
+5. Deploy to EKS using `kubectl`  
+6. Verify deployment  
 
-✅ 3. Kubernetes Manifests
-Deployment: 2 replicas with readiness & liveness probes
+---
 
-Service: Type LoadBalancer for public access
-
-Namespace: devops-app
-
-Config: Resource limits, environment variables, and labels
-
-Location: infra/kubernetes/ directory
-
-✅ 4. CI/CD Pipeline
-Tool: GitHub Actions
-
-Trigger: On push or PR to main branch
-
-Pipeline Stages:
-
-Run unit tests
-
-Terraform plan & apply
-
-Build Docker image
-
-Push image to ECR
-
-Deploy to EKS using kubectl
-
-Verify deployment
-
-✅ 5. Documentation
-Comprehensive README (this file)
-
-Step-by-step deployment guide
-
-Troubleshooting & enhancements
+### ✅ 5. Documentation
+- 📘 Comprehensive **README** (this file)  
+- 🧩 Step-by-step deployment guide  
+- 🧠 Troubleshooting instructions and future enhancements  
 
 🚀 Quick Start
 🧩 Prerequisites
