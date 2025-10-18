@@ -209,7 +209,7 @@ jobs:
         # Create namespace if not exists
         kubectl create namespace ${{ env.NAMESPACE }} --dry-run=client -o yaml | kubectl apply -f -
         
-        # Update image in deployment
+        # Update image in deployment - FIX THIS LINE
         if [ -f "infra/kubernetes/deployment.yaml" ]; then
           sed -i "s|IMAGE_PLACEHOLDER|${{ env.IMAGE_TAG }}|g" infra/kubernetes/deployment.yaml
         fi
@@ -217,12 +217,11 @@ jobs:
         # Apply Kubernetes manifests
         if [ -d "infra/kubernetes/" ]; then
           kubectl apply -f infra/kubernetes/ -n ${{ env.NAMESPACE }} --validate=false
+          echo "✅ Kubernetes manifests applied from infra/kubernetes/"
         else
-          echo "Kubernetes manifests directory not found"
-          # Try to find any k8s manifests
-          find . -name "*.yaml" -o -name "*.yml" | grep -E "(deployment|service|ingress)" | xargs -I {} kubectl apply -f {} -n ${{ env.NAMESPACE }} --validate=false
+          echo "❌ Kubernetes manifests directory not found at infra/kubernetes/"
+          exit 1
         fi
-        echo "✅ Application deployed to Kubernetes"
 
     - name: Verify deployment
       run: |
