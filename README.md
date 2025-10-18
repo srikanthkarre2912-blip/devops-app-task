@@ -6,26 +6,15 @@ This project demonstrates a complete automated CI/CD pipeline for deploying a Py
 
 ## Solution Architecture
 
-GitHub Repository
-│
-↓ (Push to main branch)
-GitHub Actions CI/CD Pipeline
-│
-↓
-Run Application Tests
-│
-↓
-Terraform - Provision EKS Cluster
-│
-↓
-Build & Push Docker Image to ECR
-│
-↓
-Deploy to Kubernetes
-│
-↓
-Live Application (LoadBalancer Service)
-
+```mermaid
+graph TD
+    A[GitHub Repository] --> B[(Push to main branch)]
+    B --> C[GitHub Actions CI/CD Pipeline]
+    C --> D[Run Application Tests]
+    D --> E[Terraform - Provision EKS Cluster]
+    E --> F[Build & Push Docker Image to ECR]
+    F --> G[Deploy to Kubernetes]
+    G --> H[Live Application (LoadBalancer Service)]
 
 ---
 
