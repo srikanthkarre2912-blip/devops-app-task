@@ -164,7 +164,6 @@ jobs:
       run: |
         cd app
         docker build -t ${{ env.DOCKER_IMAGE }}:${{ github.sha }} .
-        docker tag ${{ env.DOCKER_IMAGE }}:${{ github.sha }} ${{ env.DOCKER_IMAGE }}:latest
 
     - name: Push Docker image to ECR
       run: |
@@ -172,17 +171,17 @@ jobs:
         ECR_REGISTRY=$ACCOUNT_ID.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com
         
         # Create ECR repository if it doesn't exist
-        aws ecr describe-repositories --repository-names devops-app || \
-        aws ecr create-repository --repository-name devops-app
+        aws ecr describe-repositories --repository-names ${{ env.DOCKER_IMAGE }} || \
+        aws ecr create-repository --repository-name ${{ env.DOCKER_IMAGE }}
         
-        # Tag and push
-        docker tag ${{ env.DOCKER_IMAGE }}:${{ github.sha }} $ECR_REGISTRY/devops-app:${{ github.sha }}
-        docker tag ${{ env.DOCKER_IMAGE }}:latest $ECR_REGISTRY/devops-app:latest
+        # Tag and push with full ECR path
+        docker tag ${{ env.DOCKER_IMAGE }}:${{ github.sha }} $ECR_REGISTRY/${{ env.DOCKER_IMAGE }}:${{ github.sha }}
+        docker tag ${{ env.DOCKER_IMAGE }}:${{ github.sha }} $ECR_REGISTRY/${{ env.DOCKER_IMAGE }}:latest
         
-        docker push $ECR_REGISTRY/devops-app:${{ github.sha }}
-        docker push $ECR_REGISTRY/devops-app:latest
+        docker push $ECR_REGISTRY/${{ env.DOCKER_IMAGE }}:${{ github.sha }}
+        docker push $ECR_REGISTRY/${{ env.DOCKER_IMAGE }}:latest
         
-        echo "IMAGE_TAG=$ECR_REGISTRY/devops-app:${{ github.sha }}" >> $GITHUB_ENV
+        echo "FULL_IMAGE_PATH=$ECR_REGISTRY/${{ env.DOCKER_IMAGE }}:latest" >> $GITHUB_ENV
         echo "✅ Docker image pushed to ECR"
 
   deploy:
@@ -209,9 +208,10 @@ jobs:
         # Create namespace if not exists
         kubectl create namespace ${{ env.NAMESPACE }} --dry-run=client -o yaml | kubectl apply -f -
         
-        # Update image in deployment - FIXED: Proper YAML formatting for multi-line script
+        # Update image in deployment with full ECR path
         if [ -f "infra/kubernetes/deployment.yaml" ]; then
-          sed -i "s|IMAGE_PLACEHOLDER|${{ env.DOCKER_IMAGE }}:latest|g" infra/kubernetes/deployment.yaml
+          sed -i "s|IMAGE_PLACEHOLDER|$FULL_IMAGE_PATH|g" infra/kubernetes/deployment.yaml
+          echo "Updated deployment with image: $FULL_IMAGE_PATH"
         fi
         
         # Apply Kubernetes manifests
@@ -223,11 +223,44 @@ jobs:
           exit 1
         fi
 
+    - name: Debug deployment issues
+      run: |
+        echo "🔍 Debugging deployment issues..."
+        sleep 30  # Wait a bit for pods to attempt startup
+        
+        # Check deployment details
+        kubectl get deployment devops-app -n ${{ env.NAMESPACE }} -o wide
+        echo "---"
+        kubectl describe deployment devops-app -n ${{ env.NAMESPACE }}
+        echo "---"
+        
+        # Check pods and their status
+        kubectl get pods -n ${{ env.NAMESPACE }} -o wide
+        echo "---"
+        kubectl describe pods -n ${{ env.NAMESPACE }} -l app=devops-app
+        echo "---"
+        
+        # Check events in the namespace
+        kubectl get events -n ${{ env.NAMESPACE }} --sort-by='.lastTimestamp'
+        echo "---"
+        
+        # Check if there are any pod logs available
+        for pod in $(kubectl get pods -n ${{ env.NAMESPACE }} -l app=devops-app -o name); do
+          echo "Logs for $pod:"
+          kubectl logs $pod -n ${{ env.NAMESPACE }} --tail=50 || echo "No logs available yet"
+          echo "---"
+        done
+
     - name: Verify deployment
       run: |
-        kubectl rollout status deployment/devops-app -n ${{ env.NAMESPACE }} --timeout=300s
-        kubectl get pods,svc -n ${{ env.NAMESPACE }}
+        echo "⏳ Waiting for deployment to be ready (timeout: 10 minutes)..."
+        kubectl rollout status deployment/devops-app -n ${{ env.NAMESPACE }} --timeout=600s
         echo "✅ Deployment verified"
+
+    - name: Check final status
+      run: |
+        kubectl get pods,svc -n ${{ env.NAMESPACE }}
+        echo "✅ All resources deployed successfully"
 
     - name: Get application URL
       run: |
