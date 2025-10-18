@@ -1,0 +1,68 @@
+name: Destroy Infrastructure
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirm_destroy:
+        description: 'Type "DESTROY-PRODUCTION" to confirm destruction'
+        required: true
+        type: string
+        default: ''
+
+env:
+  AWS_REGION: us-east-1
+  CLUSTER_NAME: my-eks-cluster-1
+  DOCKER_IMAGE: devops-app
+  TERRAFORM_VERSION: 1.5.0
+
+jobs:
+  terraform-destroy:
+    runs-on: ubuntu-latest
+    if: ${{ github.event.inputs.confirm_destroy == 'DESTROY-PRODUCTION' }}
+    environment: production
+    
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TERRAFORM_VERSION }}
+
+      - name: Terraform Init
+        run: |
+          cd infra/terraform
+          terraform init
+
+      - name: Terraform Destroy
+        run: |
+          echo "🚨 DESTROYING ALL INFRASTRUCTURE 🚨"
+          cd infra/terraform
+          terraform destroy -auto-approve
+          echo "✅ Terraform infrastructure destroyed"
+
+      - name: Clean up ECR Repository
+        run: |
+          echo "Cleaning up ECR repository..."
+          # Delete ECR repository
+          aws ecr delete-repository --repository-name ${{ env.DOCKER_IMAGE }} --force || echo "ECR repository already deleted"
+          echo "✅ ECR repository cleaned up"
+
+      - name: Verify Destruction
+        run: |
+          echo "Verifying infrastructure destruction..."
+          # Check if EKS cluster still exists
+          if aws eks describe-cluster --name ${{ env.CLUSTER_NAME }} --region ${{ env.AWS_REGION }} > /dev/null 2>&1; then
+            echo "❌ EKS cluster still exists"
+            exit 1
+          else
+            echo "✅ EKS cluster destroyed"
+          fi
+          echo "🎯 All infrastructure resources have been successfully destroyed"
