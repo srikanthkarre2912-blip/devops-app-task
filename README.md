@@ -17,7 +17,6 @@ graph TD
     C --> D[Build & Push Docker Image to ECR]
     D --> E[Deploy to EKS using kubectl]
     E --> F[Access App via LoadBalancer URL]
-![Application Diagram](https://raw.githubusercontent.com/srikanthkarre2912-blip/devops-app-task/a2d80dd56453347732c29cccb966f0719a8ffd0d/qaz.jpg)
 
 ## ⚙️ Core Requirements Implementation
 
