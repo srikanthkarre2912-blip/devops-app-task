@@ -1,0 +1,190 @@
+name: CI/CD Pipeline
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+env:
+  AWS_REGION: us-east-1
+  CLUSTER_NAME: my-eks-cluster-1
+  DOCKER_IMAGE: devops-app
+  NAMESPACE: devops-app
+  TERRAFORM_VERSION: 1.5.0
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+      
+      - name: Install dependencies
+        run: |
+          cd app
+          pip install -r requirements.txt
+      
+      - name: Test application
+        run: |
+          cd app
+          python -c "import app; print('✅ App imports successfully')"
+
+  terraform-apply:
+    needs: test
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/main'
+    
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TERRAFORM_VERSION }}
+
+      - name: Terraform Init, Validate, Plan, Apply
+        run: |
+          cd infra/terraform
+          terraform fmt -check || terraform fmt
+          terraform init
+          terraform validate -no-color
+          terraform plan -no-color -out=tfplan
+          terraform apply -auto-approve tfplan
+          echo "✅ Terraform infrastructure applied"
+
+      - name: Wait for EKS cluster to be active
+        run: |
+          echo "Waiting for EKS cluster to become active..."
+          for i in {1..35}; do
+            CLUSTER_STATUS=$(aws eks describe-cluster --name ${{ env.CLUSTER_NAME }} --region ${{ env.AWS_REGION }} --query "cluster.status" --output text 2>/dev/null || echo "CREATING")
+            echo "Cluster status: $CLUSTER_STATUS"
+            if [ "$CLUSTER_STATUS" = "ACTIVE" ]; then
+              echo "✅ EKS cluster is now ACTIVE"
+              break
+            fi
+            if [ $i -eq 35 ]; then
+              echo "❌ Timeout waiting for cluster to become active"
+              exit 1
+            fi
+            sleep 20
+          done
+
+      - name: Update kubeconfig
+        run: |
+          aws eks update-kubeconfig --region ${{ env.AWS_REGION }} --name ${{ env.CLUSTER_NAME }}
+          kubectl cluster-info
+          echo "✅ Kubeconfig updated successfully"
+
+      - name: Create namespace
+        run: |
+          kubectl create namespace ${{ env.NAMESPACE }} --dry-run=client -o yaml | kubectl apply -f -
+          echo "✅ Namespace created"
+
+  build-and-push:
+    needs: terraform-apply
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/main'
+    outputs:
+      image_path: ${{ steps.push.outputs.image_path }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Login to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Build Docker image
+        run: |
+          cd app
+          docker build -t ${{ env.DOCKER_IMAGE }}:${{ github.sha }} .
+
+      - name: Push Docker image to ECR
+        id: push
+        run: |
+          ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
+          ECR_REGISTRY=$ACCOUNT_ID.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com
+          FULL_IMAGE_PATH="$ECR_REGISTRY/${{ env.DOCKER_IMAGE }}:latest"
+
+          # Ensure ECR repo exists
+          aws ecr describe-repositories --repository-names ${{ env.DOCKER_IMAGE }} || \
+          aws ecr create-repository --repository-name ${{ env.DOCKER_IMAGE }}
+
+          docker tag ${{ env.DOCKER_IMAGE }}:${{ github.sha }} $FULL_IMAGE_PATH
+          docker push $FULL_IMAGE_PATH
+
+          echo "✅ Docker image pushed to ECR: $FULL_IMAGE_PATH"
+          echo "image_path=$FULL_IMAGE_PATH" >> $GITHUB_OUTPUT
+
+  deploy:
+    needs: build-and-push
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/main'
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Update kubeconfig
+        run: |
+          aws eks update-kubeconfig --region ${{ env.AWS_REGION }} --name ${{ env.CLUSTER_NAME }}
+
+      - name: Deploy to Kubernetes
+        env:
+          FULL_IMAGE_PATH: ${{ needs.build-and-push.outputs.image_path }}
+        run: |
+          echo "Using image: $FULL_IMAGE_PATH"
+          
+          # Create namespace if not exists
+          kubectl create namespace ${{ env.NAMESPACE }} --dry-run=client -o yaml | kubectl apply -f -
+
+          # Replace image placeholder
+          if [ -f "infra/kubernetes/deployment.yaml" ]; then
+            sed -i "s|IMAGE_PLACEHOLDER|$FULL_IMAGE_PATH|g" infra/kubernetes/deployment.yaml
+            echo "Updated deployment.yaml with image: $FULL_IMAGE_PATH"
+          else
+            echo "❌ Deployment YAML not found at infra/kubernetes/"
+            exit 1
+          fi
+
+          # Apply Kubernetes manifests
+          kubectl apply -f infra/kubernetes/ -n ${{ env.NAMESPACE }} --validate=false
+          echo "✅ Kubernetes manifests applied successfully"
+
+      - name: Verify deployment
+        run: |
+          kubectl rollout status deployment/devops-app -n ${{ env.NAMESPACE }} --timeout=600s
+          kubectl get pods,svc -n ${{ env.NAMESPACE }}
+          echo "✅ Deployment verified successfully"
+
+      - name: Get application URL
+        run: |
+          echo "🎯 Application Deployment Complete!"
+          echo "Application URL (LoadBalancer):"
+          kubectl get service -n ${{ env.NAMESPACE }} -o wide
+          echo -e "\nUse the EXTERNAL-IP above to access your app."
