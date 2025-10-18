@@ -1,10 +1,13 @@
-# DevOps Engineer Take-Home Task: Automated Kubernetes Deployment
+# 🚀 DevOps Engineer Take-Home Task: Automated Kubernetes Deployment
 
-## Overview
+## 🧭 Overview
 
-This project demonstrates a complete automated CI/CD pipeline for deploying a Python Flask web application to an Amazon EKS (Elastic Kubernetes Service) cluster. The solution implements Infrastructure as Code (IaC) using Terraform, containerization with Docker, and automated deployments via GitHub Actions.
+This project demonstrates a **fully automated CI/CD pipeline** that deploys a **Python Flask web application** to an **Amazon EKS (Elastic Kubernetes Service)** cluster.  
+It integrates **Terraform** for Infrastructure as Code (IaC), **Docker** for containerization, and **GitHub Actions** for automation.
 
-## Solution Architecture
+---
+
+## 🧱 Solution Architecture
 
 ```mermaid
 graph TD
@@ -15,163 +18,200 @@ graph TD
     E --> F[Build & Push Docker Image to ECR]
     F --> G[Deploy to Kubernetes]
     G --> H[Live Application (LoadBalancer Service)]
+⚙️ Core Requirements Implementation
+✅ 1. Infrastructure as Code (IaC)
+Tool: Terraform
 
----
+Cloud Provider: AWS
 
-## Core Requirements Implementation
+Resources Provisioned:
 
-### ✅ 1. Infrastructure as Code (IaC)
-- **Technology**: Terraform  
-- **Cloud Provider**: AWS EKS  
-- **Resources Provisioned**:
-  - EKS Cluster with managed node group
-  - IAM roles for EKS service and worker nodes
-  - Utilizes existing VPC and subnets for networking
-  - S3 backend for Terraform state management
+EKS cluster with managed node group
 
-### ✅ 2. Containerization
-- **Application**: Python Flask web application  
-- **Dockerfile**: Multi-stage build for optimized image size  
-- **Registry**: AWS ECR (Elastic Container Registry)  
-- **Optimization**: Python slim base image, minimal dependencies  
+IAM roles for EKS service and worker nodes
 
-### ✅ 3. Kubernetes Manifests
-- **Deployment**: 2 replicas with health checks  
-- **Service**: LoadBalancer type for public access  
-- **Configuration**: Environment variables, resource limits  
-- **Location**: `infra/kubernetes/` directory  
+VPC and subnets for networking
 
-### ✅ 4. CI/CD Pipeline
-- **Tool**: GitHub Actions  
-- **Triggers**: Push to main branch, pull requests  
-- **Stages**:
-  1. Test application  
-  2. Terraform plan & apply  
-  3. Build and push Docker image  
-  4. Deploy to Kubernetes  
-  5. Verify deployment  
+Remote S3 backend for Terraform state management
 
-### ✅ 5. Documentation
-- This comprehensive README  
-- Clear setup instructions  
-- Design rationale explanations  
+✅ 2. Containerization
+App: Python Flask web application
 
----
+Dockerfile: Multi-stage build for optimized image size
 
-## Quick Start
+Registry: AWS ECR (Elastic Container Registry)
 
-### Prerequisites
-- AWS Account with appropriate permissions  
-- GitHub Repository  
-- AWS Credentials (Access Key ID and Secret Access Key)  
+Optimization: Based on Python slim image for efficiency
 
-### Setup Instructions
+✅ 3. Kubernetes Manifests
+Deployment: 2 replicas with readiness & liveness probes
 
-#### 1. Clone the Repository
-```bash
+Service: Type LoadBalancer for public access
+
+Namespace: devops-app
+
+Config: Resource limits, environment variables, and labels
+
+Location: infra/kubernetes/ directory
+
+✅ 4. CI/CD Pipeline
+Tool: GitHub Actions
+
+Trigger: On push or PR to main branch
+
+Pipeline Stages:
+
+Run unit tests
+
+Terraform plan & apply
+
+Build Docker image
+
+Push image to ECR
+
+Deploy to EKS using kubectl
+
+Verify deployment
+
+✅ 5. Documentation
+Comprehensive README (this file)
+
+Step-by-step deployment guide
+
+Troubleshooting & enhancements
+
+🚀 Quick Start
+🧩 Prerequisites
+Ensure you have the following:
+
+AWS Account with appropriate IAM permissions
+
+GitHub Repository
+
+AWS CLI and kubectl installed
+
+Terraform v1.5.0 or higher
+
+Docker installed
+
+⚙️ Setup Instructions
+1. Clone the Repository
+bash
+Copy code
 git clone <repository-url>
 cd devops-app-task
-
 2. Configure AWS Credentials in GitHub
+Go to:
+Repository Settings → Secrets and Variables → Actions
 
-Go to Repository Settings → Secrets and variables → Actions
+Add these secrets:
 
-Add the following secrets:
-
+nginx
+Copy code
 AWS_ACCESS_KEY_ID
-
 AWS_SECRET_ACCESS_KEY
+AWS_REGION
+(Optionally add ECR_REPOSITORY or CLUSTER_NAME if used in your workflow.)
 
 3. Trigger the Pipeline
-
-Push to the main branch or create a pull request.
-The pipeline will automatically:
+Push code to the main branch or create a Pull Request.
+GitHub Actions will automatically:
 
 Run tests
 
-Provision EKS cluster
+Provision infrastructure (Terraform)
 
 Build and push Docker image
 
-Deploy application
+Deploy the app to EKS
+
+Output LoadBalancer URL
 
 4. Access the Application
+After successful deployment, check the GitHub Actions logs for the LoadBalancer URL.
+Example output:
 
-After deployment completes, check the pipeline logs for the LoadBalancer URL.
-Access your application at:
+java
+Copy code
+Application URL (LoadBalancer):
+http://a5a4e153303a24038a8dd72fdef8fdbf-1372945717.us-east-1.elb.amazonaws.com
+Open the above URL in your browser 🌎
 
-http://<loadbalancer-external-ip>
-
-Monitoring and Logs
+🧠 Monitoring & Logs
 Check Application Status
+bash
+Copy code
 kubectl get pods,svc -n devops-app
-
 View Application Logs
+bash
+Copy code
 kubectl logs -l app=devops-app -n devops-app
-
-Check Cluster Status
+Check Cluster Information
+bash
+Copy code
 kubectl get nodes
 kubectl cluster-info
+🧰 Troubleshooting
+Issue	Cause	Fix
+Terraform apply fails	Invalid AWS credentials or IAM permissions	Verify AWS secrets and permissions
+ImagePullBackOff	ECR repo missing or unauthorized	Confirm ECR repo exists and IAM role allows access
+App not accessible	LoadBalancer not ready or SG blocked	Wait a few minutes or allow port 80 in security group
+Pods in CrashLoopBackOff	App config error	Check kubectl logs for details
 
-Troubleshooting
-Common Issues
-Pipeline fails at Terraform apply
-
-Check AWS credentials in GitHub secrets
-
-Verify IAM permissions for EKS, EC2, and IAM
-
-Image pull errors
-
-Ensure ECR repository exists and has proper permissions
-
-Verify image tag in deployment.yaml
-
-Application not accessible
-
-Check LoadBalancer status:
-
-kubectl get svc -n devops-app
-
-
-Verify security groups allow inbound traffic on port 80
-
-Pods not starting
-
-Check pod logs:
-
-kubectl logs <pod-name> -n devops-app
-
-
-Verify cluster resource limits
-
-Debug Commands
+🔍 Debug Commands
+bash
+Copy code
 # Check all resources in namespace
 kubectl get all -n devops-app
 
-# Describe specific resource
+# Describe deployment
 kubectl describe deployment/devops-app -n devops-app
 
-# Check events
+# Check recent events
 kubectl get events -n devops-app --sort-by=.metadata.creationTimestamp
+🧹 Cleanup
+To destroy all AWS resources created by Terraform:
 
-Cleanup
-
-To destroy all created resources:
-
+bash
+Copy code
 cd infra/terraform
 terraform destroy -auto-approve
+🧭 Future Enhancements
+🧩 Implement Helm charts for Kubernetes manifests
 
-Future Enhancements
+📊 Add monitoring with Prometheus & Grafana
 
-Implement Helm charts for Kubernetes manifests
+🔒 Integrate security scanning (Trivy, Checkov)
 
-Add monitoring with Prometheus and Grafana
+🔁 Implement blue-green or canary deployments
 
-Integrate security scanning in CI/CD pipeline
+⚡ Add Horizontal Pod Autoscaling (HPA)
 
-Implement blue-green deployments
+🪵 Centralized logging (CloudWatch or ELK Stack)
 
-Add autoscaling configurations
+✅ End Result
+You get a production-ready, automated CI/CD pipeline deploying a containerized Flask application to AWS EKS — with public access through a LoadBalancer and fully managed infrastructure via Terraform.
 
-Set up centralized logging
+🧑‍💻 Author
+DevOps Engineer Candidate
+🗓️ Built using: Terraform · AWS · EKS · Docker · GitHub Actions · Kubernetes
+
+yaml
+Copy code
+
+---
+
+### 💡 Notes:
+- The original error (`Unable to render rich display`) was caused by missing closing triple backticks ``` after the Mermaid diagram.  
+- The above version includes proper Markdown syntax and formatting to render perfectly on GitHub.  
+- The diagram now visualizes your CI/CD flow cleanly.
+
+---
+
+Would you like me to **add a rendered architecture diagram (PNG)** version of the Mermaid flow as a fallback, in case GitHub’s Mermaid rendering is disabled?
+
+
+
+
+
+
