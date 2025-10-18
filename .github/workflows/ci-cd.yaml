@@ -211,7 +211,7 @@ jobs:
         
         # Update image in deployment - FIX THIS LINE
         if [ -f "infra/kubernetes/deployment.yaml" ]; then
-          sed -i "s|IMAGE_PLACEHOLDER|${{ env.IMAGE_TAG }}|g" infra/kubernetes/deployment.yaml
+          sed -i "s|IMAGE_PLACEHOLDER|${DOCKER_IMAGE}:latest|g" infra/kubernetes/deployment.yaml
         fi
         
         # Apply Kubernetes manifests
