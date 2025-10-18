@@ -209,11 +209,10 @@ jobs:
         # Create namespace if not exists
         kubectl create namespace ${{ env.NAMESPACE }} --dry-run=client -o yaml | kubectl apply -f -
         
-        # Update image in deployment - FIXED LINE
-if [ -f "infra/kubernetes/deployment.yaml" ]; then
-  sed -i "s|IMAGE_PLACEHOLDER|${DOCKER_IMAGE}:latest|g" infra/kubernetes/deployment.yaml
-fi
-
+        # Update image in deployment - FIXED: Proper YAML formatting for multi-line script
+        if [ -f "infra/kubernetes/deployment.yaml" ]; then
+          sed -i "s|IMAGE_PLACEHOLDER|${{ env.DOCKER_IMAGE }}:latest|g" infra/kubernetes/deployment.yaml
+        fi
         
         # Apply Kubernetes manifests
         if [ -d "infra/kubernetes/" ]; then
