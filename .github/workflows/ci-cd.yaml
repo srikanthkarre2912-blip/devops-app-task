@@ -58,24 +58,37 @@ jobs:
         run: |
           cd infra/terraform
           terraform fmt -check || terraform fmt
-          terraform init
+          terraform init -input=false
           terraform validate -no-color
           terraform plan -no-color -out=tfplan
+          set +e
           terraform apply -auto-approve tfplan
-          echo "✅ Terraform infrastructure applied"
+          APPLY_STATUS=$?
+          set -e
 
-      - name: Wait for EKS cluster to be active
+          if [ $APPLY_STATUS -ne 0 ]; then
+            echo "❌ Terraform apply failed — checking EKS cluster state..."
+            aws eks describe-cluster --name ${{ env.CLUSTER_NAME }} --region ${{ env.AWS_REGION }} || true
+            exit 1
+          fi
+          echo "✅ Terraform infrastructure applied successfully."
+
+      - name: Wait for EKS cluster to become active
         run: |
-          echo "Waiting for EKS cluster to become active..."
-          for i in {1..35}; do
-            CLUSTER_STATUS=$(aws eks describe-cluster --name ${{ env.CLUSTER_NAME }} --region ${{ env.AWS_REGION }} --query "cluster.status" --output text 2>/dev/null || echo "CREATING")
-            echo "Cluster status: $CLUSTER_STATUS"
-            if [ "$CLUSTER_STATUS" = "ACTIVE" ]; then
+          echo "⏳ Waiting for EKS cluster to become ACTIVE..."
+          for i in {1..40}; do
+            STATUS=$(aws eks describe-cluster --name ${{ env.CLUSTER_NAME }} --region ${{ env.AWS_REGION }} --query "cluster.status" --output text 2>/dev/null || echo "CREATING")
+            echo "Cluster status: $STATUS"
+            if [ "$STATUS" = "ACTIVE" ]; then
               echo "✅ EKS cluster is now ACTIVE"
               break
+            elif [ "$STATUS" = "FAILED" ]; then
+              echo "❌ EKS cluster entered FAILED state"
+              aws eks describe-cluster --name ${{ env.CLUSTER_NAME }} --region ${{ env.AWS_REGION }} --query "cluster.status" --output text
+              exit 1
             fi
-            if [ $i -eq 35 ]; then
-              echo "❌ Timeout waiting for cluster to become active"
+            if [ $i -eq 40 ]; then
+              echo "❌ Timeout waiting for EKS cluster to become ACTIVE"
               exit 1
             fi
             sleep 20
@@ -90,7 +103,7 @@ jobs:
       - name: Create namespace
         run: |
           kubectl create namespace ${{ env.NAMESPACE }} --dry-run=client -o yaml | kubectl apply -f -
-          echo "✅ Namespace created"
+          echo "✅ Namespace created or verified"
 
   build-and-push:
     needs: terraform-apply
@@ -125,13 +138,11 @@ jobs:
           ECR_REGISTRY=$ACCOUNT_ID.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com
           FULL_IMAGE_PATH="$ECR_REGISTRY/${{ env.DOCKER_IMAGE }}:latest"
 
-          # Ensure ECR repo exists
           aws ecr describe-repositories --repository-names ${{ env.DOCKER_IMAGE }} || \
           aws ecr create-repository --repository-name ${{ env.DOCKER_IMAGE }}
 
           docker tag ${{ env.DOCKER_IMAGE }}:${{ github.sha }} $FULL_IMAGE_PATH
           docker push $FULL_IMAGE_PATH
-
           echo "✅ Docker image pushed to ECR: $FULL_IMAGE_PATH"
           echo "image_path=$FULL_IMAGE_PATH" >> $GITHUB_OUTPUT
 
@@ -159,11 +170,7 @@ jobs:
           FULL_IMAGE_PATH: ${{ needs.build-and-push.outputs.image_path }}
         run: |
           echo "Using image: $FULL_IMAGE_PATH"
-          
-          # Create namespace if not exists
           kubectl create namespace ${{ env.NAMESPACE }} --dry-run=client -o yaml | kubectl apply -f -
-
-          # Replace image placeholder
           if [ -f "infra/kubernetes/deployment.yaml" ]; then
             sed -i "s|IMAGE_PLACEHOLDER|$FULL_IMAGE_PATH|g" infra/kubernetes/deployment.yaml
             echo "Updated deployment.yaml with image: $FULL_IMAGE_PATH"
@@ -171,8 +178,6 @@ jobs:
             echo "❌ Deployment YAML not found at infra/kubernetes/"
             exit 1
           fi
-
-          # Apply Kubernetes manifests
           kubectl apply -f infra/kubernetes/ -n ${{ env.NAMESPACE }} --validate=false
           echo "✅ Kubernetes manifests applied successfully"
 
