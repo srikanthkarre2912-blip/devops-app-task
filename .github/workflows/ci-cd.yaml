@@ -38,6 +38,7 @@ jobs:
     needs: test
     runs-on: ubuntu-latest
     if: github.ref == 'refs/heads/main'
+    timeout-minutes: 45
     
     steps:
       - uses: actions/checkout@v4
@@ -54,61 +55,103 @@ jobs:
         with:
           terraform_version: ${{ env.TERRAFORM_VERSION }}
 
-      - name: Terraform Init, Validate, Plan, Apply
+      - name: Terraform Init and Validate
         run: |
           cd infra/terraform
-          terraform fmt -check || terraform fmt
-          terraform init -input=false
+          terraform fmt -check || terraform fmt -recursive
+          terraform init -input=false -upgrade
           terraform validate -no-color
-          terraform plan -no-color -out=tfplan
-          set +e
-          terraform apply -auto-approve tfplan
-          APPLY_STATUS=$?
-          set -e
 
-          if [ $APPLY_STATUS -ne 0 ]; then
-            echo "❌ Terraform apply failed — checking EKS cluster state..."
-            aws eks describe-cluster --name ${{ env.CLUSTER_NAME }} --region ${{ env.AWS_REGION }} || true
-            exit 1
-          fi
-          echo "✅ Terraform infrastructure applied successfully."
+      - name: Terraform Plan
+        id: plan
+        run: |
+          cd infra/terraform
+          terraform plan -no-color -out=tfplan -input=false
+          echo "PLAN_EXIT_CODE=$?" >> $GITHUB_ENV
+
+      - name: Terraform Apply - EKS Cluster Only
+        if: env.PLAN_EXIT_CODE == 0
+        run: |
+          cd infra/terraform
+          echo "🔄 Creating EKS cluster first..."
+          terraform apply -auto-approve -target=aws_eks_cluster.eks_cluster -input=false
+          echo "✅ EKS cluster creation initiated"
 
       - name: Wait for EKS cluster to become active
+        if: env.PLAN_EXIT_CODE == 0
         run: |
-          echo "⏳ Waiting for EKS cluster to become ACTIVE..."
-          for i in {1..40}; do
+          echo "⏳ Waiting for EKS cluster to become ACTIVE (max 30 minutes)..."
+          for i in {1..90}; do
             STATUS=$(aws eks describe-cluster --name ${{ env.CLUSTER_NAME }} --region ${{ env.AWS_REGION }} --query "cluster.status" --output text 2>/dev/null || echo "CREATING")
-            echo "Cluster status: $STATUS"
-            if [ "$STATUS" = "ACTIVE" ]; then
-              echo "✅ EKS cluster is now ACTIVE"
-              break
-            elif [ "$STATUS" = "FAILED" ]; then
-              echo "❌ EKS cluster entered FAILED state"
-              aws eks describe-cluster --name ${{ env.CLUSTER_NAME }} --region ${{ env.AWS_REGION }} --query "cluster.status" --output text
-              exit 1
-            fi
-            if [ $i -eq 40 ]; then
-              echo "❌ Timeout waiting for EKS cluster to become ACTIVE"
+            echo "Cluster status: $STATUS (attempt $i/90)"
+            
+            case $STATUS in
+              "ACTIVE")
+                echo "✅ EKS cluster is now ACTIVE"
+                break
+                ;;
+              "FAILED")
+                echo "❌ EKS cluster creation FAILED"
+                echo "🔍 Checking cluster health details..."
+                aws eks describe-cluster --name ${{ env.CLUSTER_NAME }} --region ${{ env.AWS_REGION }} --query "cluster.health" || true
+                echo "📋 Checking CloudFormation stack events..."
+                aws cloudformation describe-stack-events \
+                  --stack-name eksctl-${{ env.CLUSTER_NAME }}-cluster \
+                  --region ${{ env.AWS_REGION }} \
+                  --query "StackEvents[?ResourceStatus=='CREATE_FAILED'].[ResourceType,ResourceStatusReason]" \
+                  --output table 2>/dev/null || echo "No CloudFormation stack found"
+                exit 1
+                ;;
+              "DELETING"|"DELETED")
+                echo "❌ EKS cluster is being deleted or already deleted"
+                exit 1
+                ;;
+            esac
+            
+            if [ $i -eq 90 ]; then
+              echo "❌ Timeout waiting for EKS cluster to become ACTIVE (30 minutes)"
+              echo "🔍 Last known status: $STATUS"
               exit 1
             fi
             sleep 20
           done
 
-      - name: Update kubeconfig
+      - name: Terraform Apply - Complete Infrastructure
+        if: env.PLAN_EXIT_CODE == 0
         run: |
+          cd infra/terraform
+          echo "🔄 Creating remaining infrastructure (node groups, etc.)..."
+          terraform apply -auto-approve -input=false
+          echo "✅ All Terraform infrastructure applied successfully"
+
+      - name: Update kubeconfig and verify cluster access
+        if: env.PLAN_EXIT_CODE == 0
+        run: |
+          echo "🔄 Updating kubeconfig..."
           aws eks update-kubeconfig --region ${{ env.AWS_REGION }} --name ${{ env.CLUSTER_NAME }}
+          
+          echo "🔍 Verifying cluster access..."
           kubectl cluster-info
-          echo "✅ Kubeconfig updated successfully"
+          kubectl get nodes --show-labels
+          echo "✅ Kubeconfig updated and cluster access verified"
 
       - name: Create namespace
+        if: env.PLAN_EXIT_CODE == 0
         run: |
           kubectl create namespace ${{ env.NAMESPACE }} --dry-run=client -o yaml | kubectl apply -f -
-          echo "✅ Namespace created or verified"
+          echo "✅ Namespace '${{ env.NAMESPACE }}' created or verified"
+
+      - name: Terraform Apply Failure Cleanup
+        if: env.PLAN_EXIT_CODE != 0 || failure()
+        run: |
+          echo "🧹 Cleanup needed due to Terraform failure"
+          echo "Cluster status before cleanup:"
+          aws eks describe-cluster --name ${{ env.CLUSTER_NAME }} --region ${{ env.AWS_REGION }} --query "cluster.status" --output text 2>/dev/null || echo "Cluster not found"
 
   build-and-push:
     needs: terraform-apply
     runs-on: ubuntu-latest
-    if: github.ref == 'refs/heads/main'
+    if: github.ref == 'refs/heads/main' && needs.terraform-apply.result == 'success'
     outputs:
       image_path: ${{ steps.push.outputs.image_path }}
 
@@ -129,27 +172,39 @@ jobs:
       - name: Build Docker image
         run: |
           cd app
+          echo "🐳 Building Docker image..."
           docker build -t ${{ env.DOCKER_IMAGE }}:${{ github.sha }} .
+          echo "✅ Docker image built successfully"
 
       - name: Push Docker image to ECR
         id: push
         run: |
           ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
           ECR_REGISTRY=$ACCOUNT_ID.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com
-          FULL_IMAGE_PATH="$ECR_REGISTRY/${{ env.DOCKER_IMAGE }}:latest"
-
-          aws ecr describe-repositories --repository-names ${{ env.DOCKER_IMAGE }} || \
-          aws ecr create-repository --repository-name ${{ env.DOCKER_IMAGE }}
-
+          FULL_IMAGE_PATH="$ECR_REGISTRY/${{ env.DOCKER_IMAGE }}:${{ github.sha }}"
+          LATEST_IMAGE_PATH="$ECR_REGISTRY/${{ env.DOCKER_IMAGE }}:latest"
+          
+          echo "🏗️ Ensuring ECR repository exists..."
+          aws ecr describe-repositories --repository-names ${{ env.DOCKER_IMAGE }} > /dev/null 2>&1 || \
+          aws ecr create-repository --repository-name ${{ env.DOCKER_IMAGE }} --image-scanning-configuration scanOnPush=true
+          
+          echo "📦 Tagging and pushing Docker images..."
           docker tag ${{ env.DOCKER_IMAGE }}:${{ github.sha }} $FULL_IMAGE_PATH
+          docker tag ${{ env.DOCKER_IMAGE }}:${{ github.sha }} $LATEST_IMAGE_PATH
+          
           docker push $FULL_IMAGE_PATH
-          echo "✅ Docker image pushed to ECR: $FULL_IMAGE_PATH"
+          docker push $LATEST_IMAGE_PATH
+          
+          echo "✅ Docker images pushed to ECR:"
+          echo "   - $FULL_IMAGE_PATH"
+          echo "   - $LATEST_IMAGE_PATH"
           echo "image_path=$FULL_IMAGE_PATH" >> $GITHUB_OUTPUT
 
   deploy:
     needs: build-and-push
     runs-on: ubuntu-latest
-    if: github.ref == 'refs/heads/main'
+    if: github.ref == 'refs/heads/main' && needs.build-and-push.result == 'success'
+    timeout-minutes: 15
 
     steps:
       - uses: actions/checkout@v4
@@ -163,33 +218,78 @@ jobs:
 
       - name: Update kubeconfig
         run: |
-          aws eks update-kubeconfig --region ${{ env.AWS_REGION }} --name ${{ env.CLUSTER_NAME }}
+          aws eks update-kubeconfig --region ${{ env.AWS_REGION }} --name ${{ env.CLUSTER_NAME }} --alias eks-cluster
 
       - name: Deploy to Kubernetes
         env:
           FULL_IMAGE_PATH: ${{ needs.build-and-push.outputs.image_path }}
         run: |
+          echo "🚀 Starting Kubernetes deployment..."
           echo "Using image: $FULL_IMAGE_PATH"
+          
+          # Create namespace if not exists
           kubectl create namespace ${{ env.NAMESPACE }} --dry-run=client -o yaml | kubectl apply -f -
-          if [ -f "infra/kubernetes/deployment.yaml" ]; then
-            sed -i "s|IMAGE_PLACEHOLDER|$FULL_IMAGE_PATH|g" infra/kubernetes/deployment.yaml
-            echo "Updated deployment.yaml with image: $FULL_IMAGE_PATH"
-          else
-            echo "❌ Deployment YAML not found at infra/kubernetes/"
+          
+          # Check if Kubernetes manifests exist
+          if [ ! -f "infra/kubernetes/deployment.yaml" ]; then
+            echo "❌ Deployment YAML not found at infra/kubernetes/deployment.yaml"
+            ls -la infra/kubernetes/ 2>/dev/null || echo "Kubernetes directory not found"
             exit 1
           fi
-          kubectl apply -f infra/kubernetes/ -n ${{ env.NAMESPACE }} --validate=false
+          
+          # Create a temporary directory for modified manifests
+          mkdir -p /tmp/k8s-manifests
+          cp -r infra/kubernetes/* /tmp/k8s-manifests/
+          
+          # Replace image placeholder in deployment
+          sed -i "s|IMAGE_PLACEHOLDER|$FULL_IMAGE_PATH|g" /tmp/k8s-manifests/deployment.yaml
+          echo "✅ Updated deployment.yaml with image: $FULL_IMAGE_PATH"
+          
+          # Apply Kubernetes manifests
+          kubectl apply -f /tmp/k8s-manifests/ -n ${{ env.NAMESPACE }} --validate=false
           echo "✅ Kubernetes manifests applied successfully"
 
-      - name: Verify deployment
+      - name: Wait for deployment rollout
         run: |
+          echo "⏳ Waiting for deployment to complete..."
           kubectl rollout status deployment/devops-app -n ${{ env.NAMESPACE }} --timeout=600s
-          kubectl get pods,svc -n ${{ env.NAMESPACE }}
-          echo "✅ Deployment verified successfully"
+          echo "✅ Deployment rollout completed successfully"
+
+      - name: Verify deployment status
+        run: |
+          echo "🔍 Verifying deployment status..."
+          echo "--- Pods: ---"
+          kubectl get pods -n ${{ env.NAMESPACE }} -o wide
+          echo "--- Services: ---"
+          kubectl get svc -n ${{ env.NAMESPACE }} -o wide
+          echo "--- Deployments: ---"
+          kubectl get deployments -n ${{ env.NAMESPACE }} -o wide
+          
+          # Check pod status in detail
+          echo "--- Pod Details: ---"
+          kubectl describe pods -n ${{ env.NAMESPACE }} -l app=devops-app || true
+
+      - name: Check application logs
+        if: always()
+        run: |
+          echo "📋 Checking application logs..."
+          for pod in $(kubectl get pods -n ${{ env.NAMESPACE }} -l app=devops-app -o name 2>/dev/null); do
+            echo "Logs for $pod:"
+            kubectl logs $pod -n ${{ env.NAMESPACE }} --tail=50 || echo "No logs available"
+            echo "---"
+          done
 
       - name: Get application URL
         run: |
           echo "🎯 Application Deployment Complete!"
-          echo "Application URL (LoadBalancer):"
+          echo ""
+          echo "📊 Deployment Summary:"
+          echo "----------------------"
+          kubectl get all -n ${{ env.NAMESPACE }}
+          echo ""
+          echo "🌐 Application URL (LoadBalancer):"
+          echo "---------------------------------"
           kubectl get service -n ${{ env.NAMESPACE }} -o wide
-          echo -e "\nUse the EXTERNAL-IP above to access your app."
+          echo ""
+          echo "💡 Use the EXTERNAL-IP from the service above to access your application"
+          echo "🔄 If EXTERNAL-IP is pending, it may take a few minutes to provision"
