@@ -8,7 +8,7 @@ on:
 
 env:
   AWS_REGION: us-east-1
-  CLUSTER_NAME: my-eks-cluster-2
+  CLUSTER_NAME: my-eks-cluster-1
   DOCKER_IMAGE: devops-app
   NAMESPACE: devops-app
   TERRAFORM_VERSION: 1.5.0
@@ -61,6 +61,29 @@ jobs:
           terraform fmt -check || terraform fmt -recursive
           terraform init -input=false -upgrade
           terraform validate -no-color
+
+      - name: Import Existing IAM Roles
+        run: |
+          cd infra/terraform
+          echo "🔄 Importing existing IAM roles to avoid conflicts..."
+          
+          # Import EKS service role if it exists
+          if aws iam get-role --role-name eksServiceRole-${{ env.CLUSTER_NAME }} > /dev/null 2>&1; then
+            echo "📥 Importing existing EKS service role..."
+            terraform import aws_iam_role.eks_service_role eksServiceRole-${{ env.CLUSTER_NAME }} || echo "⚠️ Service role already imported or import failed"
+          else
+            echo "ℹ️ EKS service role does not exist, will create new"
+          fi
+          
+          # Import EKS node role if it exists
+          if aws iam get-role --role-name eksNodeRole-${{ env.CLUSTER_NAME }} > /dev/null 2>&1; then
+            echo "📥 Importing existing EKS node role..."
+            terraform import aws_iam_role.eks_node_role eksNodeRole-${{ env.CLUSTER_NAME }} || echo "⚠️ Node role already imported or import failed"
+          else
+            echo "ℹ️ EKS node role does not exist, will create new"
+          fi
+          
+          echo "✅ IAM role import process completed"
 
       - name: Terraform Plan
         id: plan
@@ -293,4 +316,3 @@ jobs:
           echo ""
           echo "💡 Use the EXTERNAL-IP from the service above to access your application"
           echo "🔄 If EXTERNAL-IP is pending, it may take a few minutes to provision"
-
